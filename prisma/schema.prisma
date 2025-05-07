@@ -19,6 +19,11 @@ enum Role {
   ADMIN
 }
 
+enum ActionType {
+  TRANSFER_ORTHO
+  TRANSFER_PARO
+}
+
 enum Status {
   PENDING
   IN_PROGRESS
@@ -53,6 +58,7 @@ enum SeanceType {
   SURFACAGE
   ACTIVATION
   RECOLLAGE
+  REEVALUATION
 }
 
 model User {
@@ -75,7 +81,6 @@ model Medecin {
   consultations Consultation[]
   Diagnostique  Diagnostique[]
   Seance        Seance[]
-  reevaluations Reevaluation[]
 }
 
 model Etudiant {
@@ -102,7 +107,7 @@ model Patient {
   consultations        Consultation[]
   Seances              Seance[]
   actions              Action[]
-  reevaluations        Reevaluation[]
+  State                Profession  @default(PARODONTAIRE)
 }
 
 model Consultation {
@@ -135,30 +140,30 @@ model Seance {
   medecin   Medecin    @relation(fields: [medecinId], references: [id])
   medecinId String
   patientId String
+  Reevaluation Reevaluation?
 }
 
 model Reevaluation {
   id              String   @id @default(uuid())
-  date            DateTime
   indiceDePlaque  Float
   indiceGingivale Float
   sondagePhoto    String? // URL or path to the pocket probing photo
-  patient         Patient  @relation(fields: [patientId], references: [id])
-  patientId       String
-  medecin         Medecin  @relation(fields: [medecinId], references: [id])
-  medecinId       String
+  seance         Seance  @relation(fields: [seanceId], references: [id])
+  seanceId       String @unique
 }
 
 model Action {
   id          String   @id @default(uuid())
-  type        String
-  description String
+  type        ActionType
   date        DateTime
+  isValid     Boolean
   medecin     Medecin  @relation(fields: [medecinId], references: [id])
   medecinId   String
   patient     Patient  @relation(fields: [patientId], references: [id])
   patientId   String
 }
+
+
 
 model Task {
   id     String @id @default(uuid())
