@@ -4,7 +4,7 @@ import express, { Request, Response, NextFunction } from 'express';
 import { PrismaClient, Etudiant } from '@prisma/client';
 import KcAdminClient from '@keycloak/keycloak-admin-client';
 import * as dotenv from "dotenv";
-import { connectToKeycloak } from '../utils/keycloak.js';
+import { connectToKeycloak, safeKeycloakConnect } from '../utils/keycloak.js';
 
 dotenv.config();
 
@@ -22,8 +22,10 @@ interface EtudiantRequestBody {
 // Helper function to get Keycloak user info
 async function getKeycloakUserInfo(userId: string) {
   try {
-    kcAdminClient = await connectToKeycloak();
-    const user = await kcAdminClient.users.findOne({ id: userId });
+    const kc = await safeKeycloakConnect();
+    if (!kc) return null;
+    
+    const user = await kc.users.findOne({ id: userId });
     return user;
   } catch (error) {
     console.error('Error fetching Keycloak user:', error);
@@ -72,11 +74,14 @@ router.get('/:id', async function(req: Request<{id: string}>, res: Response, _ne
 
 router.post('/', async function(req: Request<{}, {}, EtudiantRequestBody>, res: Response, _next: NextFunction) {
   try {
-    await kcAdminClient.users.create({
+    const kc = await safeKeycloakConnect(res);
+    if (!kc) return;
+    
+    await kc.users.create({
       username: req.body.username,
       email: req.body.email
     });
-    const userInfo = await kcAdminClient.users.find({ username: req.body.username });
+    const userInfo = await kc.users.find({ username: req.body.username });
     
     const newEtudiant: Etudiant = await prisma.etudiant.create({
       data: {

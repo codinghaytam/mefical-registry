@@ -2,7 +2,7 @@
 import express from 'express';
 import { PrismaClient } from '@prisma/client';
 import * as dotenv from "dotenv";
-import { connectToKeycloak } from '../utils/keycloak.js';
+import { safeKeycloakConnect } from '../utils/keycloak.js';
 dotenv.config();
 let kcAdminClient;
 const router = express.Router();
@@ -10,8 +10,10 @@ const prisma = new PrismaClient();
 // Helper function to get Keycloak user info
 async function getKeycloakUserInfo(userId) {
     try {
-        kcAdminClient = await connectToKeycloak();
-        const user = await kcAdminClient.users.findOne({ id: userId });
+        const kc = await safeKeycloakConnect();
+        if (!kc)
+            return null;
+        const user = await kc.users.findOne({ id: userId });
         return user;
     }
     catch (error) {
@@ -61,11 +63,14 @@ router.get('/:id', async function (req, res, _next) {
 });
 router.post('/', async function (req, res, _next) {
     try {
-        await kcAdminClient.users.create({
+        const kc = await safeKeycloakConnect(res);
+        if (!kc)
+            return;
+        await kc.users.create({
             username: req.body.username,
             email: req.body.email
         });
-        const userInfo = await kcAdminClient.users.find({ username: req.body.username });
+        const userInfo = await kc.users.find({ username: req.body.username });
         const newEtudiant = await prisma.etudiant.create({
             data: {
                 userId: userInfo[0].id,

@@ -5,7 +5,15 @@ const prisma = new PrismaClient();
 // GET all diagnostiques
 router.get('/', async function (_req, res) {
     try {
-        const diagnostiques = await prisma.diagnostique.findMany();
+        const diagnostiques = await prisma.diagnostique.findMany({
+            include: {
+                Medecin: {
+                    include: {
+                        user: true
+                    }
+                }
+            }
+        });
         res.status(200).send(diagnostiques);
     }
     catch (e) {
@@ -20,7 +28,14 @@ router.get('/', async function (_req, res) {
 router.get('/:id', async function (req, res) {
     try {
         const diagnostique = await prisma.diagnostique.findUnique({
-            where: { id: req.params.id }
+            where: { id: req.params.id },
+            include: {
+                Medecin: {
+                    include: {
+                        user: true
+                    }
+                }
+            }
         });
         if (diagnostique) {
             res.status(200).send(diagnostique);

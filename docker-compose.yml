@@ -1,0 +1,65 @@
+version: '3.8'
+
+services:
+  # Node.js Application
+  node-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: node-app
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - DATABASE_URL=postgresql://postgres:postgrespassword@postgres:5432/postgres?schema=public
+      - KEYCLOAK_SERVER_URL=http://keycloak:9090/auth
+      - KEYCLOAK_REALM=myRealm
+      - KEYCLOAK_CLIENT_ID=medical-registry
+      - KEYCLOAK_CLIENT_SECRET=yMPWLw3KpQse36zns4HwHdS571Vz3z6W
+    networks:
+      app-network:
+        ipv4_address: 172.92.0.220
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:14
+    container_name: postgresql
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgrespassword
+      - POSTGRES_DB=postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      app-network:
+        ipv4_address: 172.92.0.110
+
+  # Keycloak for Authentication/Authorization
+  keycloak:
+    image: quay.io/keycloak/keycloak:21.1.1
+    container_name: keycloak
+    command: start-dev
+    restart: unless-stopped
+    ports:
+      - "9090:8080"
+    environment:
+      - KEYCLOAK_ADMIN=admin
+      - KEYCLOAK_ADMIN_PASSWORD=admin
+    networks:
+      app-network:
+        ipv4_address: 172.92.0.100
+
+
+networks:
+  app-network:
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.92.0.0/16
+
+volumes:
+  postgres_data:

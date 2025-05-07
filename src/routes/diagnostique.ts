@@ -13,7 +13,15 @@ interface DiagnostiqueRequestBody {
 // GET all diagnostiques
 router.get('/', async function(_req: Request, res: Response) {
   try {
-    const diagnostiques: Diagnostique[] = await prisma.diagnostique.findMany();
+    const diagnostiques: Diagnostique[] = await prisma.diagnostique.findMany({
+      include:{
+        Medecin:{
+          include:{
+            user: true
+          }
+        }
+      }
+    });
     res.status(200).send(diagnostiques);
   } catch (e) {
     console.error(e);
@@ -27,7 +35,14 @@ router.get('/', async function(_req: Request, res: Response) {
 router.get('/:id', async function(req: Request, res: Response) {
   try {
     const diagnostique: Diagnostique | null = await prisma.diagnostique.findUnique({
-      where: { id: req.params.id }
+      where: { id: req.params.id },
+      include:{
+        Medecin:{
+          include:{
+            user: true
+          }
+        }
+      }
     });
     if (diagnostique) {
       res.status(200).send(diagnostique);

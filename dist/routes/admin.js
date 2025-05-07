@@ -1,14 +1,18 @@
 import express from 'express';
 import * as dotenv from "dotenv";
-import { connectToKeycloak } from '../utils/keycloak.js';
+import { safeKeycloakConnect, getUserByEmail } from '../utils/keycloak.js';
+import { PrismaClient } from '@prisma/client';
 dotenv.config();
 const router = express.Router();
+const prisma = new PrismaClient();
 let kcAdminClient;
 // Helper function to get Keycloak user info
 async function getKeycloakUserInfo(userId) {
     try {
-        kcAdminClient = await connectToKeycloak();
-        const user = await kcAdminClient.users.findOne({ id: userId });
+        const kc = await safeKeycloakConnect();
+        if (!kc)
+            return null;
+        const user = await kc.users.findOne({ id: userId });
         return user;
     }
     catch (error) {
@@ -16,137 +20,269 @@ async function getKeycloakUserInfo(userId) {
         return null;
     }
 }
-// Helper function to assign admin role to user
-async function assignAdminRole(userId) {
-    try {
-        kcAdminClient = await connectToKeycloak();
-        // Get admin role
-        const roles = await kcAdminClient.roles.find();
-        const adminRole = roles.find(role => role.name === 'admin');
-        if (!adminRole) {
-            throw new Error('Admin role not found in Keycloak');
-        }
-        // Assign admin role to user
-        await kcAdminClient.users.addRealmRoleMappings({
-            id: userId,
-            roles: [
-                {
-                    id: adminRole.id,
-                    name: adminRole.name,
-                },
-            ],
-        });
-    }
-    catch (error) {
-        console.error('Error assigning admin role:', error);
-        throw error;
-    }
-}
 /* GET admins listing. */
 router.get('/', async function (_req, res) {
     try {
-        kcAdminClient = await connectToKeycloak();
-        const users = await kcAdminClient.users.find();
-        // Filter users with admin role
-        const admins = await Promise.all(users.map(async (user) => {
-            const roles = await kcAdminClient.users.listRealmRoleMappings({ id: user.id });
-            if (roles.some(role => role.name === 'admin')) {
-                return user;
+        // Get admin users from database
+        const adminUsers = await prisma.user.findMany({
+            where: {
+                role: 'ADMIN'
             }
-            return null;
+        });
+        // Get additional info from Keycloak for each admin
+        const adminsWithDetails = await Promise.all(adminUsers.map(async (adminUser) => {
+            const kcUser = await getUserByEmail(adminUser.email);
+            if (kcUser) {
+                return {
+                    ...adminUser,
+                    keycloakId: kcUser.id,
+                    firstName: kcUser.firstName,
+                    lastName: kcUser.lastName
+                };
+            }
+            return adminUser;
         }));
-        res.status(200).send(admins.filter(admin => admin !== null));
+        res.status(200).send(adminsWithDetails);
     }
     catch (e) {
         console.error(e);
         res.status(500).send({ error: "Failed to fetch admins" });
     }
+    finally {
+        await prisma.$disconnect();
+    }
 });
-router.get('/:id', async function (req, res) {
+// Get admin by email route
+router.get('/email/:email', async function (req, res, _next) {
     try {
+        // Find admin user in database
+        const dbUser = await prisma.user.findFirst({
+            where: {
+                email: req.params.email,
+                role: 'ADMIN'
+            }
+        });
+        if (!dbUser) {
+            res.status(404).send({ error: "Admin not found in database" });
+            return;
+        }
+        // Get Keycloak details using the new utility function
+        const kcUser = await getUserByEmail(req.params.email, res);
+        res.status(200).send({
+            ...dbUser,
+            keycloakDetails: kcUser || null
+        });
+    }
+    catch (e) {
+        console.error(e);
+        res.status(500).send({ error: "Failed to fetch admin by email" });
+    }
+    finally {
+        await prisma.$disconnect();
+    }
+});
+router.get('/:id', async function (req, res, _next) {
+    try {
+        // First check if this is a Keycloak ID
         const keycloakUser = await getKeycloakUserInfo(req.params.id);
-        if (!keycloakUser) {
-            return res.status(404).send({ error: "Admin not found" });
+        if (keycloakUser) {
+            // If it's a Keycloak ID, look for corresponding database user with ADMIN role
+            const dbUser = await prisma.user.findFirst({
+                where: {
+                    email: keycloakUser.email,
+                    role: 'ADMIN'
+                }
+            });
+            if (!dbUser) {
+                res.status(404).send({ error: "User is not an admin in the database" });
+                return;
+            }
+            res.status(200).send({
+                ...keycloakUser,
+                dbUser
+            });
         }
-        kcAdminClient = await connectToKeycloak();
-        // Check if user has admin role
-        const roles = await kcAdminClient.users.listRealmRoleMappings({ id: req.params.id });
-        if (!roles.some(role => role.name === 'admin')) {
-            return res.status(404).send({ error: "User is not an admin" });
+        else {
+            // If not a Keycloak ID, try to find by database ID
+            const dbUser = await prisma.user.findUnique({
+                where: { id: req.params.id },
+            });
+            if (!dbUser || dbUser.role !== 'ADMIN') {
+                res.status(404).send({ error: "Admin not found" });
+                return;
+            }
+            // Get Keycloak details using the new utility function
+            const kcUser = await getUserByEmail(dbUser.email, res);
+            res.status(200).send({
+                ...dbUser,
+                keycloakDetails: kcUser || null
+            });
         }
-        res.status(200).send(keycloakUser);
     }
     catch (e) {
         console.error(e);
         res.status(500).send({ error: "Failed to fetch admin" });
     }
+    finally {
+        await prisma.$disconnect();
+    }
 });
 router.post('/', async function (req, res) {
     try {
-        kcAdminClient = await connectToKeycloak();
+        // Connect to Keycloak
+        const kc = await safeKeycloakConnect(res);
+        if (!kc) {
+            res.send(409);
+            return;
+        }
+        // Check if user already exists in database
+        const existingUser = await prisma.user.findUnique({
+            where: { email: req.body.email }
+        });
+        if (existingUser) {
+            res.status(400).send({ error: "User with this email already exists" });
+            return;
+        }
+        // Check if user exists in Keycloak using the new utility function
+        const existingKeycloakUser = await getUserByEmail(req.body.email, res);
+        if (existingKeycloakUser) {
+            res.status(400).send({ error: "User with this email already exists in Keycloak" });
+            return;
+        }
         // Create user in Keycloak
-        const keycloakUser = await kcAdminClient.users.create({
+        const keycloakUser = await kc.users.create({
             username: req.body.username,
             email: req.body.email,
             firstName: req.body.firstName,
             lastName: req.body.lastName,
             enabled: true,
+            credentials: req.body.pwd ? [{
+                    type: 'password',
+                    value: req.body.pwd,
+                    temporary: false
+                }] : undefined,
         });
-        // Assign admin role
-        await assignAdminRole(keycloakUser.id);
-        res.status(201).send(keycloakUser);
+        // Create user in database with ADMIN role - this is now the only place role is stored
+        const dbUser = await prisma.user.create({
+            data: {
+                email: req.body.email,
+                username: req.body.username,
+                name: `${req.body.firstName || ''} ${req.body.lastName || ''}`.trim(),
+                role: 'ADMIN'
+            }
+        });
+        res.status(201).send({
+            ...dbUser,
+            keycloakId: keycloakUser.id
+        });
     }
     catch (e) {
         console.error(e);
         res.status(500).send({ error: "Failed to create admin user: " + e });
     }
+    finally {
+        await prisma.$disconnect();
+    }
 });
 router.put('/:id', async function (req, res) {
     try {
-        const keycloakUser = await getKeycloakUserInfo(req.params.id);
-        if (!keycloakUser) {
-            return res.status(404).send({ error: "Admin not found" });
+        // First check if the admin exists in our database
+        const dbUser = await prisma.user.findFirst({
+            where: {
+                id: req.params.id,
+                role: 'ADMIN'
+            }
+        });
+        if (!dbUser) {
+            res.status(404).send({ error: "Admin not found in database" });
+            return;
         }
-        kcAdminClient = await connectToKeycloak();
-        // Check if user has admin role
-        const roles = await kcAdminClient.users.listRealmRoleMappings({ id: req.params.id });
-        if (!roles.some(role => role.name === 'admin')) {
-            return res.status(404).send({ error: "User is not an admin" });
+        // Connect to Keycloak
+        const kc = await safeKeycloakConnect(res);
+        if (!kc)
+            return;
+        // Find the Keycloak user using the new utility function
+        const kcUser = await getUserByEmail(dbUser.email, res);
+        if (!kcUser) {
+            res.status(404).send({ error: "Admin not found in Keycloak" });
+            return;
         }
         // Update Keycloak user
-        await kcAdminClient.users.update({ id: req.params.id }, {
+        await kc.users.update({ id: kcUser.id || "" }, {
             username: req.body.username,
             email: req.body.email,
             firstName: req.body.firstName,
             lastName: req.body.lastName,
         });
-        const updatedUser = await getKeycloakUserInfo(req.params.id);
-        return res.status(200).send(updatedUser);
+        // Update database user
+        const updatedUser = await prisma.user.update({
+            where: { id: req.params.id },
+            data: {
+                email: req.body.email,
+                username: req.body.username,
+                name: req.body.firstName && req.body.lastName
+                    ? `${req.body.firstName} ${req.body.lastName}`
+                    : undefined
+            }
+        });
+        // If password provided, update it
+        if (req.body.pwd) {
+            await kc.users.resetPassword({
+                id: kcUser.id ?? "",
+                credential: {
+                    temporary: false,
+                    type: 'password',
+                    value: req.body.pwd,
+                },
+            });
+        }
+        const updatedKeycloakUser = await kc.users.findOne({ id: kcUser.id ?? "" });
+        res.status(200).send({
+            ...updatedUser,
+            keycloakDetails: updatedKeycloakUser
+        });
     }
     catch (e) {
         console.error(e);
-        return res.status(500).send({ error: "Failed to update admin" });
+        res.status(500).send({ error: "Failed to update admin" });
+    }
+    finally {
+        await prisma.$disconnect();
     }
 });
 router.delete('/:id', async function (req, res) {
     try {
-        const keycloakUser = await getKeycloakUserInfo(req.params.id);
-        if (!keycloakUser) {
-            return res.status(404).send({ error: "Admin not found" });
+        // Find the admin in our database
+        const dbUser = await prisma.user.findFirst({
+            where: {
+                id: req.params.id,
+                role: 'ADMIN'
+            }
+        });
+        if (!dbUser) {
+            res.status(404).send({ error: "Admin not found in database" });
+            return;
         }
-        kcAdminClient = await connectToKeycloak();
-        // Check if user has admin role
-        const roles = await kcAdminClient.users.listRealmRoleMappings({ id: req.params.id });
-        if (!roles.some(role => role.name === 'admin')) {
-            return res.status(404).send({ error: "User is not an admin" });
+        // Connect to Keycloak
+        const kc = await safeKeycloakConnect(res);
+        if (!kc)
+            return;
+        // Find the Keycloak user using the new utility function
+        const kcUser = await getUserByEmail(dbUser.email, res);
+        // Delete from database
+        await prisma.user.delete({ where: { id: req.params.id } });
+        // Delete from Keycloak if found
+        if (kcUser) {
+            await kc.users.del({ id: kcUser.id ?? "" });
         }
-        // Delete from Keycloak
-        await kcAdminClient.users.del({ id: req.params.id });
-        return res.status(204).send();
+        res.status(204).send();
     }
     catch (e) {
         console.error(e);
-        return res.status(500).send({ error: "Failed to delete admin" });
+        res.status(500).send({ error: "Failed to delete admin" });
+    }
+    finally {
+        await prisma.$disconnect();
     }
 });
 export default router;

@@ -72,20 +72,22 @@ router.get('/', async function(_req: Request, res: Response, _next: NextFunction
         },
         diagnostiques: {
           include: {
-            Medecin: true
+            Medecin: {
+              include:{
+                user:true
+              }
+            }
           }
         }
       }
     });
     
-    
     if (!Array.isArray(consultations)) {
       throw new Error("Failed to fetch consultations");
     }
 
-    
-
-    res.status(200).send({...consultations,userInfo});
+    // Return the consultations array directly
+    res.status(200).send(consultations);
   } catch (e) {
     console.error(e);
     res.status(500).send({ error: "Failed to fetch consultations" });
@@ -108,7 +110,11 @@ router.get('/:id', async function(req: Request, res: Response, _next: NextFuncti
         },
         diagnostiques: {
           include: {
-            Medecin: true
+            Medecin: {
+              include:{
+                user:true
+              }
+            }
           }
         }
       }
@@ -129,6 +135,19 @@ router.get('/:id', async function(req: Request, res: Response, _next: NextFuncti
 // POST a new consultation
 router.post('/', async function(req: Request<{}, {}, ConsultationRequestBody>, res: Response, _next: NextFunction) {
   try {
+    // First check if the medecin exists
+    const medecin = await prisma.medecin.findUnique({
+      where: { id: req.body.medecinId }
+    });
+    
+    if (!medecin) {
+      res.status(404).send({ 
+        error: "No Medecin record found with ID: " + req.body.medecinId,
+        hint: "Please verify the medecinId is correct and that the doctor exists in the database."
+      });
+      return; // Add return statement to prevent further execution
+    }
+    
     const newConsultation: Consultation = await prisma.consultation.create({
       data: {
         date: new Date(req.body.date),
@@ -170,31 +189,52 @@ router.post('/', async function(req: Request<{}, {}, ConsultationRequestBody>, r
 // Add new route for adding diagnosis to consultation
 router.post('/:id/diagnosis', async function(req: Request<{id: string}, {}, DiagnosisRequestBody>, res: Response) {
   try {
+    // First check if both the medecin and consultation exist
     const medecin = await prisma.medecin.findUnique({
-      where: {id:req.body.medecinId}
-    })
+      where: {id: req.body.medecinId}
+    });
+    
+    if (!medecin) {
+      res.status(404).send({ 
+        error: "No Medecin record found with ID: " + req.body.medecinId,
+        hint: "Please verify the medecinId is correct and that the doctor exists in the database."
+      });
+      return; // Add return statement to prevent further execution
+    }
+    
     const consultation = await prisma.consultation.findUnique({
-      where: {id:req.params.id},
+      where: {id: req.params.id},
       include:{
         diagnostiques:{
           include:{
-            Medecin:true
+            Medecin: true
           }
         }
       }
-    })
-    if((consultation?.diagnostiques?.length ?? 0) >= 2){
-      res.status(401).send({error: "no more then 2 diagnosis is allowed for one consultation"})
-
+    });
+    
+    if (!consultation) {
+      res.status(404).send({
+        error: "No Consultation record found with ID: " + req.params.id
+      });
+      return; // Add return statement to prevent further execution
+    }
+    
+    if (consultation && (consultation.diagnostiques?.length ?? 0) >= 2) {
+      res.status(401).send({error: "No more than 2 diagnoses are allowed for one consultation"});
+      return; // Add return statement to prevent further execution
     }
 
-    consultation?.diagnostiques.forEach(
-      (diag)=>{
-        if(diag.Medecin?.profession === medecin?.profession){
-          res.status(401).send({error: "only one diagnosis of type "+medecin?.profession+" is allowed"})
+    if(consultation){
+      for (const diag of consultation.diagnostiques) {
+        if (medecin && diag.Medecin?.profession === medecin.profession) {
+          res.status(401).send({
+            error: "Only one diagnosis of type " + medecin.profession + " is allowed"
+          });
+          return; // Add return statement to prevent further execution
         }
       }
-    )
+    }
 
     const newDiagnosis = await prisma.diagnostique.create({
       data: {

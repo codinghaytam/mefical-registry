@@ -16,13 +16,47 @@ async function getKeycloakUserInfo(userId) {
         return null;
     }
 }
+// Validation helper function for seance type and medecin profession
+async function validateSeanceTypeWithMedecinProfession(type, medecinId) {
+    try {
+        // Get the medecin to check their profession
+        const medecin = await prisma.medecin.findUnique({
+            where: { id: medecinId }
+        });
+        if (!medecin) {
+            return { valid: false, message: "Médecin introuvable" };
+        }
+        // Validate based on seance type and medecin profession
+        if (['DETARTRAGE', 'SURFACAGE', 'REEVALUATION'].includes(type) && medecin.profession !== 'PARODONTAIRE') {
+            return {
+                valid: false,
+                message: `Les séances de type ${type} ne peuvent être associées qu'à un médecin PARODENTAIRE`
+            };
+        }
+        if (['ACTIVATION', 'RECOLLAGE'].includes(type) && medecin.profession !== 'ORTHODONTAIRE') {
+            return {
+                valid: false,
+                message: `Les séances de type ${type} ne peuvent être associées qu'à un médecin ORTHODONTAIRE`
+            };
+        }
+        return { valid: true };
+    }
+    catch (error) {
+        console.error('Error validating seance type with medecin profession:', error);
+        return { valid: false, message: "Erreur lors de la validation du type de séance et du médecin" };
+    }
+}
 // GET all seances
 router.get('/', async function (_req, res, _next) {
     try {
         const seances = await prisma.seance.findMany({
             include: {
                 patient: true,
-                medecin: true
+                medecin: {
+                    include: {
+                        user: true
+                    }
+                }
             }
         });
         if (!Array.isArray(seances)) {
@@ -55,7 +89,11 @@ router.get('/:id', async function (req, res, _next) {
             where: { id: req.params.id },
             include: {
                 patient: true,
-                medecin: true
+                medecin: {
+                    include: {
+                        user: true
+                    }
+                }
             }
         });
         if (seance) {
@@ -85,6 +123,12 @@ router.get('/:id', async function (req, res, _next) {
 // POST a new seance
 router.post('/', async function (req, res, _next) {
     try {
+        // Validate seance type and medecin profession compatibility
+        const validationResult = await validateSeanceTypeWithMedecinProfession(req.body.type, req.body.medecinId);
+        if (!validationResult.valid) {
+            res.status(400).send({ error: validationResult.message });
+            return;
+        }
         const newSeance = await prisma.seance.create({
             data: {
                 type: req.body.type,
@@ -111,10 +155,12 @@ router.post('/', async function (req, res, _next) {
             }
         };
         res.status(201).send(seanceWithUserInfo);
+        return;
     }
     catch (e) {
         console.error(e);
         res.status(500).send({ error: "Failed to create seance" });
+        return;
     }
     finally {
         await prisma.$disconnect();
@@ -123,6 +169,38 @@ router.post('/', async function (req, res, _next) {
 // PUT to update a specific seance
 router.put('/:id', async function (req, res, _next) {
     try {
+        // If both type and medecinId are being updated, validate them together
+        if (req.body.type && req.body.medecinId) {
+            const validationResult = await validateSeanceTypeWithMedecinProfession(req.body.type, req.body.medecinId);
+            if (!validationResult.valid) {
+                res.status(400).send({ error: validationResult.message });
+            }
+        }
+        // If only the type is changing, validate it with the existing medecin
+        else if (req.body.type) {
+            const existingSeance = await prisma.seance.findUnique({
+                where: { id: req.params.id },
+                include: { medecin: true }
+            });
+            if (existingSeance) {
+                const validationResult = await validateSeanceTypeWithMedecinProfession(req.body.type, existingSeance.medecinId);
+                if (!validationResult.valid) {
+                    res.status(400).send({ error: validationResult.message });
+                }
+            }
+        }
+        // If only the medecin is changing, validate it with the existing type
+        else if (req.body.medecinId) {
+            const existingSeance = await prisma.seance.findUnique({
+                where: { id: req.params.id }
+            });
+            if (existingSeance) {
+                const validationResult = await validateSeanceTypeWithMedecinProfession(existingSeance.type, req.body.medecinId);
+                if (!validationResult.valid) {
+                    res.status(400).send({ error: validationResult.message });
+                }
+            }
+        }
         const updatedSeance = await prisma.seance.update({
             where: { id: req.params.id },
             data: {
@@ -150,10 +228,12 @@ router.put('/:id', async function (req, res, _next) {
             }
         };
         res.status(200).send(seanceWithUserInfo);
+        return;
     }
     catch (e) {
         console.error(e);
         res.status(500).send({ error: "Failed to update seance" });
+        return;
     }
     finally {
         await prisma.$disconnect();
