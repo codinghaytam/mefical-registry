@@ -6,6 +6,7 @@ import { connectToKeycloak, safeKeycloakConnect } from '../utils/keycloak.js';
 
 dotenv.config()
 
+
 let kcAdminClient: KcAdminClient;
 const routes = express.Router();
 const prisma = new PrismaClient();

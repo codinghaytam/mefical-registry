@@ -74,7 +74,6 @@ app.use((err: createError.HttpError, req: Request, res: Response, next: NextFunc
 });
 
 
-
 app.listen(3000, () => {
   console.log('Server running on port 3000');
   console.log('Images directory serving at /uploads');
